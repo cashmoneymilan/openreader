@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Swift Package Manager / Xcode
+apps/macos/.build/
+apps/macos/.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Generated applications, engines, conversions, and reports
+build/
+dist/
+openreader-engine.spec
+
+# Editor files
+.idea/
+.vscode/
+*~
