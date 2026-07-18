@@ -130,17 +130,33 @@ scripts/                    build, packaging, and acceptance automation
 docs/                       protocol notes and Milestone 0 evidence
 ```
 
-## Device support and limitations
+## Reader compatibility
 
-- Xteink X4 is the launch-device target.
-- Stock firmware and CrossPoint use separate adapters and evidence levels.
-- CrossPoint readback can establish a cryptographic verification result; a stock upload acknowledgement cannot.
-- Physical stock and CrossPoint X4 acceptance remains pending until hardware is available.
+OpenReader generates deliberately conservative, DRM-free EPUB 2 files. The files should open on readers that support standard EPUB, including Kobo, PocketBook, BOOX, and reMarkable. Kindle accepts EPUB through Send to Kindle, where Amazon converts it to a Kindle format.
+
+There are two different compatibility levels:
+
+| Reader | Generated EPUB | Direct send from OpenReader |
+| --- | --- | --- |
+| Xteink X4, stock firmware | Yes | Implemented; physical verification pending |
+| Xteink X4, CrossPoint | Yes | Implemented; physical verification pending |
+| Kobo | Expected | Not yet; export and sideload manually |
+| PocketBook | Expected | Not yet; export and sideload manually |
+| BOOX | Expected | Not yet; export or use BOOXDrop manually |
+| reMarkable | Expected | Not yet; import through its app, web interface, or USB |
+| Kindle | Via Send to Kindle conversion | Not yet |
+
+Official format references: [Kobo](https://help.kobo.com/hc/en-us/articles/360017763713-File-formats-your-Kobo-eReader-and-Kobo-Books-app-support), [PocketBook](https://products.pocketbook.ch/), [BOOX](https://help.boox.com/hc/en-us/articles/25400769451540-Adjust-EPUB-and-Similar), [reMarkable](https://support.remarkable.com/articles/Knowledge/importing-and-exporting-files), and [Kindle](https://www.amazon.com/sendtokindle).
+
+Additional limitations:
+
+- Stock Xteink and CrossPoint use separate adapters and evidence levels.
+- CrossPoint readback can establish cryptographic verification; a stock upload acknowledgement cannot.
 - X3 compatibility is not claimed without physical testing.
-- The current app is ad-hoc signed for private use. Developer ID signing and notarization are required before external distribution.
+- The current app is ad-hoc signed. Developer ID signing and notarization are required for a production macOS release.
 
 See [Milestone 0](docs/MILESTONE-0.md), [protocol notes](docs/PROTOCOLS.md), and the [acceptance report](docs/M0-ACCEPTANCE-REPORT.md) for implementation evidence.
 
 ## Repository policy
 
-OpenReader remains private through Milestones 0–2. Do not publish or push this repository to a public remote before Milestone 3 acceptance.
+The source repository is public for development and review. Milestone 0 remains experimental: do not present the app as a production release or claim physical-reader acceptance until those tests have passed.

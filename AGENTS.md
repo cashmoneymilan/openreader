@@ -1,6 +1,6 @@
 # OpenReader
 
-Private v1 development repository. Do not publish or push it to a public remote before Milestone 3 acceptance.
+Public development repository. Do not publish a production release or claim untested hardware compatibility before the relevant acceptance gates pass.
 
 ## Architecture
 
