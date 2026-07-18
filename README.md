@@ -88,6 +88,29 @@ previews/       approximate HTML previews
 manifests/      stable OpenReader structure manifests
 ```
 
+Reflow conversion removes repeated running headers, footers, and standalone page numbers; detects chapter headings for navigation; preserves bold and italic spans; and embeds a rendered reference page when figures or complex layouts would otherwise be lost. Image-only scans still use page-image preservation.
+
+## Curated books-folder workflow
+
+OpenReader works best as a reading pipeline rather than as a device-sized archive:
+
+```text
+Incoming -> classify -> convert -> validate -> Library -> Queue -> reader -> Finished
+```
+
+Keep narrative books and long-form essays in EPUB for comfortable reflow. Keep research papers, manuals, equations, tables, and image-only scans PDF-first. A native, legally acquired DRM-free EPUB remains preferable to a converted PDF.
+
+Audit a structured library and write a machine-readable report:
+
+```bash
+uv run python scripts/audit_books_library.py \
+  "$HOME/Downloads/personal/books" \
+  --output "$HOME/Downloads/personal/books/library-audit.json" \
+  --strict
+```
+
+The audit validates every canonical EPUB against the conservative Xteink profile, detects duplicate PDFs, checks PDF/EPUB pairs, and confirms that queue files are hard-linked to their canonical EPUBs.
+
 ## Internal engine
 
 For API development, run the authenticated loopback service directly:

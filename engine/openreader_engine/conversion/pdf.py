@@ -16,6 +16,7 @@ from pathlib import Path
 import pymupdf
 
 from openreader_engine.conversion.validator import XTEINK_MAX_IMAGE_DIMENSION, validate_epub
+from openreader_engine.conversion.reflow import ReflowDocument, extract_reflow_document
 from openreader_engine.models import ConversionMode, ConversionReport, StructureSection, SupportTier
 from openreader_engine.utils import (
     atomic_write,
@@ -129,6 +130,50 @@ def _text_retention(source: str, output: str) -> float | None:
     return round(retained / sum(source_tokens.values()), 4)
 
 
+def _toc_priority(value: str, kind: str) -> int:
+    value = normalize_reader_text(value).strip()
+    if not value or len(value) > 100:
+        return 0
+    if re.search(r"(?:ISBN|copyright|all rights reserved|www\.|@|street|avenue|place|press$)", value, re.I):
+        return 0
+    if re.match(r"^(?:CHAPTER|Chapter)\s+\d+(?:\s*[:.\-–—]\s*.*)?$", value):
+        return 3
+    if re.match(r"^(?:PART|Part|BOOK|Book)\s+(?:\d+|[IVXLCDM]+)(?:\s*[:.\-–—]\s*.*)?$", value):
+        return 3
+    if re.match(
+        r"^(?:APPENDIX|Appendix|PREFACE|Preface|INTRODUCTION|Introduction|CONCLUSION|Conclusion|EPILOGUE|Epilogue|PROLOGUE|Prologue|CONTENTS|Contents|REFERENCES|References|BIBLIOGRAPHY|Bibliography|ACKNOWLEDGMENTS?|Acknowledgments?)(?:\s*[:.\-–—•]\s*.*|\s+\d+)?$",
+        value,
+    ):
+        return 3
+    if (
+        re.match(r"^(?:[1-9]\d?|[IVXLCDM]{1,6})[.)]\s+[A-Z]", value)
+        and not value.endswith(".")
+    ):
+        return 2
+    words = re.findall(r"[A-Za-z][A-Za-z'’-]*", value)
+    sentence_words = {"anyone", "because", "could", "here", "however", "their", "they", "this", "those", "were", "would"}
+    if (
+        kind == "h2"
+        and 2 <= len(words) <= 9
+        and len(value) <= 64
+        and not value.endswith((".", ";", ",", ":"))
+        and not sentence_words.intersection(word.casefold() for word in words)
+    ):
+        return 1
+    return 0
+
+
+def _dedupe_toc_entries(entries: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    order: list[str] = []
+    latest: dict[str, tuple[str, str, str]] = {}
+    for entry in entries:
+        key = re.sub(r"\W+", " ", html.unescape(entry[0])).casefold().strip()
+        if key not in latest:
+            order.append(key)
+        latest[key] = entry
+    return [latest[key] for key in order]
+
+
 def _xhtml(title: str, body: str) -> str:
     escaped_title = html.escape(title, quote=True)
     return (
@@ -138,10 +183,12 @@ def _xhtml(title: str, body: str) -> str:
         f'<head><title>{escaped_title}</title><meta http-equiv="Content-Type" content="text/html; charset=utf-8" />'
         '<style>body{font-family:serif;line-height:1.45;margin:0;padding:0;font-size:100%;}'
         '.page{margin:0;}h1{font-size:1.7em;line-height:1.1;margin:0 0 .8em;}'
-        'h2{font-size:1.2em;line-height:1.2;margin:1.2em 0 .45em;page-break-before:always;}'
+        'h2{font-size:1.35em;line-height:1.2;margin:1.4em 0 .55em;page-break-before:always;}'
+        'h3{font-size:1.1em;line-height:1.25;margin:1.1em 0 .4em;}'
         'p{margin:0 0 .65em;text-indent:0}.cover-subtitle{font-style:italic;margin-bottom:2em}'
-        '.page-kicker{font-size:.7em;color:#666;margin:1em 0 .5em;border-bottom:1px solid #aaa;padding-bottom:.35em}'
         '.image-page{page-break-before:always;text-align:center}.image-page img{max-width:100%;height:auto;display:block;margin:auto}'
+        'figure{margin:1em 0;page-break-inside:avoid;text-align:center}figure img{max-width:100%;height:auto}'
+        'figcaption{font-size:.75em;color:#666;margin-top:.35em}strong{font-weight:bold}em{font-style:italic}'
         '</style></head>'
         f"<body>{body}</body></html>"
     )
@@ -150,7 +197,7 @@ def _xhtml(title: str, body: str) -> str:
 class PDFToEpubProcessor:
     """Deterministic Milestone 0 PDF processor with a conservative Xteink profile."""
 
-    processor_version = "openreader-pdf/0.0.1"
+    processor_version = "openreader-pdf/0.1.0"
 
     def convert(self, source: Path, output_dir: Path, profile: str = "xteink") -> ConversionReport:
         if profile != "xteink":
@@ -169,14 +216,14 @@ class PDFToEpubProcessor:
 
         pages, page_texts, pdftoppm = _inspect_pdf(source)
         source_text = "\n".join(page_texts)
-        source_characters = len(normalize_for_comparison(source_text))
-        mode = ConversionMode.PAGE_IMAGES if source_characters < max(400, pages * 20) else ConversionMode.REFLOW
+        raw_source_characters = len(normalize_for_comparison(source_text))
+        mode = ConversionMode.PAGE_IMAGES if raw_source_characters < max(400, pages * 20) else ConversionMode.REFLOW
         if mode == ConversionMode.PAGE_IMAGES:
             support_tier = SupportTier.B
             tier_reasons = ["No dependable text layer was detected", "Page-image preservation selected for review"]
         else:
             support_tier = SupportTier.A
-            tier_reasons = ["Dependable text layer detected", "Single-flow reconstruction selected"]
+            tier_reasons = ["Dependable text layer detected", "Semantic reflow reconstruction selected"]
 
         title = safe_filename(normalize_reader_text(source.stem.replace("_", "-").replace("-", " ")))
         stem = safe_filename(source.stem)
@@ -195,9 +242,29 @@ class PDFToEpubProcessor:
 
         with tempfile.TemporaryDirectory(prefix="openreader-m0-") as temporary_name:
             temporary = Path(temporary_name)
+            reflow: ReflowDocument | None = None
             if mode == ConversionMode.PAGE_IMAGES:
                 rendered_images = _render_pdf_pages(source, temporary, pages, pdftoppm)
                 image_files = [f"images/page-{index}.jpg" for index in range(1, pages + 1)]
+            else:
+                reflow = extract_reflow_document(source, temporary / "figures", XTEINK_MAX_IMAGE_DIMENSION)
+                source_text = reflow.source_text
+                tier_reasons.append(f"Removed {reflow.removed_running_lines} repeated header, footer, or page-number lines")
+                if reflow.visuals:
+                    tier_reasons.append(f"Preserved {len(reflow.visuals)} visually complex source pages")
+                image_files = [f"images/{visual.path.name}" for visual in reflow.visuals]
+                rendered_images = [visual.path for visual in reflow.visuals]
+
+            blocks_by_page: dict[int, list] = {}
+            visuals_by_page: dict[int, str] = {}
+            if reflow:
+                for block in reflow.blocks:
+                    blocks_by_page.setdefault(block.page, []).append(block)
+                visuals_by_page = {
+                    visual.page: f"images/{visual.path.name}" for visual in reflow.visuals
+                }
+
+            toc_entries: list[tuple[str, str, str]] = []
 
             for start in range(0, pages, PAGE_CHUNK_SIZE):
                 end = min(pages, start + PAGE_CHUNK_SIZE)
@@ -206,6 +273,7 @@ class PDFToEpubProcessor:
                 page_files.append(xhtml_path)
                 body_parts: list[str] = []
                 chunk_text: list[str] = []
+                chunk_toc_candidates: list[tuple[int, str, str, str]] = []
                 if start == 0 and mode == ConversionMode.REFLOW:
                     body_parts.append(
                         f"<div><h1>{html.escape(title)}</h1><p class=\"cover-subtitle\">Converted locally from PDF - {pages} pages</p></div>"
@@ -217,15 +285,30 @@ class PDFToEpubProcessor:
                             f'<div class="image-page" id="page-{page_number}"><img src="images/page-{page_number}.jpg" alt="PDF page {page_number}" /></div>'
                         )
                     else:
-                        paragraphs = _paragraphs(page_texts[page_index].splitlines())
-                        chunk_text.extend(paragraphs)
-                        markup = "\n".join(
-                            f"<h2>{html.escape(paragraph)}</h2>" if _is_heading(paragraph) else f"<p>{html.escape(paragraph)}</p>"
-                            for paragraph in paragraphs
-                        )
-                        body_parts.append(
-                            f'<div class="page" id="page-{page_number}"><div class="page-kicker">Page {page_number}</div>{markup or "<p>[No extractable text on this page]</p>"}</div>'
-                        )
+                        page_markup: list[str] = []
+                        for block in blocks_by_page.get(page_number, []):
+                            chunk_text.append(block.text)
+                            if block.kind in {"h2", "h3"}:
+                                anchor = block.anchor or f"page-{page_number}"
+                                page_markup.append(f'<{block.kind} id="{anchor}">{block.markup}</{block.kind}>')
+                                priority = _toc_priority(block.text, block.kind)
+                                if priority:
+                                    chunk_toc_candidates.append((priority, block.text, xhtml_path, anchor))
+                            else:
+                                page_markup.append(f"<p>{block.markup}</p>")
+                        if page_number in visuals_by_page:
+                            page_markup.append(
+                                f'<figure><img src="{visuals_by_page[page_number]}" alt="Original source page {page_number} with figures or complex layout" />'
+                                f'<figcaption>Figure and layout reference from source page {page_number}</figcaption></figure>'
+                            )
+                        if page_markup:
+                            body_parts.append(f'<div class="page" id="page-{page_number}">{"".join(page_markup)}</div>')
+                structural = [entry for entry in chunk_toc_candidates if entry[0] == 3]
+                selected = structural[:4] if structural else sorted(chunk_toc_candidates, key=lambda entry: -entry[0])[:1]
+                if selected:
+                    toc_entries.extend((label, path, anchor) for _, label, path, anchor in selected)
+                else:
+                    toc_entries.append((f"Pages {start + 1}-{end}", xhtml_path, f"page-{start + 1}"))
                 reconstructed = "\n".join(chunk_text)
                 reconstructed_text_parts.append(reconstructed)
                 fingerprint = hashlib.sha256(normalize_for_comparison(reconstructed).encode()).hexdigest()
@@ -234,7 +317,10 @@ class PDFToEpubProcessor:
                     StructureSection(
                         id=section_id,
                         parent_id=None,
-                        heading=f"Pages {start + 1}-{end}",
+                        heading=next(
+                            (block.text for page in range(start + 1, end + 1) for block in blocks_by_page.get(page, []) if block.kind in {"h2", "h3"}),
+                            f"Pages {start + 1}-{end}",
+                        ),
                         order=chunk_number,
                         source_page_start=start + 1,
                         source_page_end=end,
@@ -249,6 +335,7 @@ class PDFToEpubProcessor:
                 xhtml_documents[xhtml_path] = _xhtml(title, "\n".join(body_parts))
 
             identifier = f"urn:uuid:{uuid.uuid4()}"
+            toc_entries = _dedupe_toc_entries(toc_entries)
             structure_payload = {
                 "schema": "openreader.document-structure.v1",
                 "source_sha256": source_sha,
@@ -265,6 +352,7 @@ class PDFToEpubProcessor:
                 image_files=image_files,
                 rendered_images=rendered_images,
                 structure_payload=structure_payload,
+                toc_entries=toc_entries,
             )
             atomic_write(output, package)
 
@@ -293,7 +381,7 @@ class PDFToEpubProcessor:
             mode=mode,
             support_tier=support_tier,
             tier_reasons=tier_reasons,
-            source_characters=source_characters,
+            source_characters=len(normalize_for_comparison(source_text)),
             output_characters=output_characters,
             normalized_text_retention=_text_retention(source_text, reconstructed_text) if mode == ConversionMode.REFLOW else None,
             validation=validation,
@@ -310,6 +398,7 @@ class PDFToEpubProcessor:
         image_files: list[str],
         rendered_images: list[Path],
         structure_payload: dict,
+        toc_entries: list[tuple[str, str, str]],
     ) -> bytes:
         with tempfile.SpooledTemporaryFile(max_size=32 * 1024 * 1024) as stream:
             with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=8) as archive:
@@ -326,8 +415,8 @@ class PDFToEpubProcessor:
                 for path, rendered in zip(image_files, rendered_images, strict=True):
                     archive.writestr(f"OEBPS/{path}", rendered.read_bytes())
                 archive.writestr("OEBPS/content.opf", self._opf(title, identifier, page_files, image_files))
-                archive.writestr("OEBPS/nav.xhtml", self._nav(title, page_files, pages))
-                archive.writestr("OEBPS/toc.ncx", self._ncx(title, identifier, page_files, pages))
+                archive.writestr("OEBPS/nav.xhtml", self._nav(title, page_files, pages, toc_entries))
+                archive.writestr("OEBPS/toc.ncx", self._ncx(title, identifier, page_files, pages, toc_entries))
             stream.seek(0)
             return stream.read()
 
@@ -353,18 +442,25 @@ class PDFToEpubProcessor:
         )
 
     @staticmethod
-    def _nav(title: str, page_files: list[str], pages: int) -> str:
-        links = "".join(
-            f'<li><a href="{path}#page-{(index - 1) * PAGE_CHUNK_SIZE + 1}">Pages {(index - 1) * PAGE_CHUNK_SIZE + 1}-{min(index * PAGE_CHUNK_SIZE, pages)}</a></li>'
+    def _nav(title: str, page_files: list[str], pages: int, toc_entries: list[tuple[str, str, str]]) -> str:
+        entries = toc_entries or [
+            (f"Pages {(index - 1) * PAGE_CHUNK_SIZE + 1}-{min(index * PAGE_CHUNK_SIZE, pages)}", path, f"page-{(index - 1) * PAGE_CHUNK_SIZE + 1}")
             for index, path in enumerate(page_files, 1)
+        ]
+        links = "".join(
+            f'<li><a href="{path}#{anchor}">{html.escape(label)}</a></li>' for label, path, anchor in entries
         )
         return _xhtml("Contents", f"<h1>{html.escape(title)}</h1><ol>{links}</ol>")
 
     @staticmethod
-    def _ncx(title: str, identifier: str, page_files: list[str], pages: int) -> str:
-        points = "".join(
-            f'<navPoint id="navpoint-{index}" playOrder="{index}"><navLabel><text>Pages {(index - 1) * PAGE_CHUNK_SIZE + 1}-{min(index * PAGE_CHUNK_SIZE, pages)}</text></navLabel><content src="{path}#page-{(index - 1) * PAGE_CHUNK_SIZE + 1}" /></navPoint>'
+    def _ncx(title: str, identifier: str, page_files: list[str], pages: int, toc_entries: list[tuple[str, str, str]]) -> str:
+        entries = toc_entries or [
+            (f"Pages {(index - 1) * PAGE_CHUNK_SIZE + 1}-{min(index * PAGE_CHUNK_SIZE, pages)}", path, f"page-{(index - 1) * PAGE_CHUNK_SIZE + 1}")
             for index, path in enumerate(page_files, 1)
+        ]
+        points = "".join(
+            f'<navPoint id="navpoint-{index}" playOrder="{index}"><navLabel><text>{html.escape(label)}</text></navLabel><content src="{path}#{anchor}" /></navPoint>'
+            for index, (label, path, anchor) in enumerate(entries, 1)
         )
         return (
             '<?xml version="1.0" encoding="utf-8"?>'
@@ -377,9 +473,12 @@ class PDFToEpubProcessor:
     def _write_preview(epub: Path, preview: Path, title: str, mode: ConversionMode) -> None:
         with zipfile.ZipFile(epub) as archive:
             document = archive.read("OEBPS/text-1.xhtml").decode("utf-8")
-            if mode == ConversionMode.PAGE_IMAGES and "OEBPS/images/page-1.jpg" in archive.namelist():
-                encoded = base64.b64encode(archive.read("OEBPS/images/page-1.jpg")).decode("ascii")
-                document = document.replace("images/page-1.jpg", f"data:image/jpeg;base64,{encoded}", 1)
+            for image_name in (name for name in archive.namelist() if name.startswith("OEBPS/images/")):
+                relative_name = image_name.removeprefix("OEBPS/")
+                if relative_name not in document:
+                    continue
+                encoded = base64.b64encode(archive.read(image_name)).decode("ascii")
+                document = document.replace(relative_name, f"data:image/jpeg;base64,{encoded}")
             banner = (
                 '<div style="position:sticky;top:0;padding:10px 14px;background:#17231f;color:#fff;font:12px sans-serif">'
                 f'OpenReader approximate Xteink preview - {html.escape(title)}</div>'

@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=${0:A:h}
 project_root=${script_dir:h}
-fixture_pdf=${1:-/Users/milanmuriithi/Downloads/personal/books/Elements of Style.pdf}
+fixture_pdf=${1:-"$HOME/Downloads/personal/books/Library/Books/Reference/The Elements of Style - William Strunk Jr.pdf"}
 verification_root="$project_root/build/m0-verification"
 handshake_path="$verification_root/engine-handshake.json"
 engine_pid=""

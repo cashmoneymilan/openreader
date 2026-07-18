@@ -23,6 +23,8 @@ xcuserdata/
 # Generated applications, engines, conversions, and reports
 build/
 dist/
+outputs/
+tmp/
 openreader-engine.spec
 
 # Editor files

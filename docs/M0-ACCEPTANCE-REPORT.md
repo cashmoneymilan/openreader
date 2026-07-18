@@ -20,16 +20,16 @@ Specification: `/Users/milanmuriithi/Downloads/openreader-v1-spec-rewrite.md`
 
 ## Automated evidence
 
-- `7 passed` Python unit/integration tests.
+- `8 passed` Python unit/integration tests.
 - API authentication, conversion, reporting, validation, and stock/CrossPoint adapter fixture tests passed.
-- All 12 PDFs in `/Users/milanmuriithi/Downloads/personal/books` produced validator-clean EPUBs.
+- The curated library audit found 11 canonical PDF/EPUB pairs, five queue items, one quarantined exact PDF duplicate, and zero issues.
 - 11 documents were classified Tier A / reflow with normalized text retention from 99.89% to 100%.
 - `Forrester_Jay_W_World_Dynamics_2nd_ed_1973 (1).pdf` was honestly classified Tier B / page images and passed package validation.
 - The XML-forbidden control character found in the Timothy Keller source was stripped before XHTML generation and retained as a regression fixture.
-- The representative scripted proof generated a valid EPUB 2 derivative and approximate HTML preview from `Elements of Style.pdf`.
+- The representative scripted proof generated a valid EPUB 2 derivative and approximate HTML preview from `Library/Books/Reference/The Elements of Style - William Strunk Jr.pdf`.
 - The frozen engine converted and validated that fixture with `PATH=/usr/bin:/bin`, proving the bundle does not require Homebrew, Poppler, or a separate Python installation.
 - The app bundle passed strict deep code-signature verification with its current private ad-hoc signature.
-- A signature-preserving private archive was produced at `build/OpenReader-M0-private-macOS-arm64.zip` (SHA-256 `49a58af8fbaa0ed8b4b04efd0dd05bb3eb1723adfe3f72939fd46b32cd8c290c`) and its extracted app passed strict deep signature verification.
+- A signature-preserving private archive was produced at `build/OpenReader-M0-private-macOS-arm64.zip` (SHA-256 `9b22f76d447238d94090a33d6aebdf2ff85f1db9a866e9d80fa3b67b0d8db7fc`) and its extracted app passed strict deep signature verification.
 
 ## Native app evidence
 

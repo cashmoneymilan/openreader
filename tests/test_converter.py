@@ -4,6 +4,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pymupdf
+
 from openreader_engine.conversion import PDFToEpubProcessor, validate_epub
 from openreader_engine.models import ConversionMode, SupportTier
 from openreader_engine.utils import normalize_reader_text
@@ -48,6 +50,53 @@ def test_converter_is_self_contained_without_poppler(text_pdf: Path, tmp_path: P
     assert report.validation.valid
     assert report.normalized_text_retention is not None
     assert report.normalized_text_retention >= 0.98
+
+
+def test_reflow_removes_running_margins_and_preserves_semantics(tmp_path: Path) -> None:
+    source = tmp_path / "styled-book.pdf"
+    with pymupdf.open() as document:
+        for page_number in range(1, 5):
+            page = document.new_page(width=612, height=792)
+            page.insert_text((72, 32), "Quarterly Reader Header", fontsize=9, fontname="helv")
+            page.insert_text((72, 770), f"Page {page_number}", fontsize=9, fontname="helv")
+            page.insert_text((72, 112), f"CHAPTER {page_number}", fontsize=20, fontname="hebo")
+            page.insert_text(
+                (72, 156),
+                "A complete paragraph should remain readable after reconstruction.",
+                fontsize=11,
+                fontname="helv",
+            )
+            page.insert_text(
+                (72, 180),
+                "Disciplined execution matters.",
+                fontsize=11,
+                fontname="hebo",
+            )
+            page.insert_text(
+                (72, 204),
+                "Patient observation improves judgment.",
+                fontsize=11,
+                fontname="heit",
+            )
+        document.save(source)
+
+    report = PDFToEpubProcessor().convert(source, tmp_path / "library")
+
+    assert report.validation.valid
+    assert any("Removed 8" in reason for reason in report.tier_reasons)
+    with zipfile.ZipFile(report.output) as archive:
+        content = archive.read("OEBPS/text-1.xhtml").decode("utf-8")
+        nav = archive.read("OEBPS/nav.xhtml").decode("utf-8")
+        ncx = archive.read("OEBPS/toc.ncx").decode("utf-8")
+
+    assert "Quarterly Reader Header" not in content
+    assert "Page 1" not in content
+    assert "page-kicker" not in content
+    assert "<strong>Disciplined execution matters.</strong>" in content
+    assert "<em>Patient observation improves judgment.</em>" in content
+    assert "CHAPTER 1" in nav
+    assert "CHAPTER 4" in ncx
+    assert nav.count("<li>") == 4
 
 
 def test_reader_text_removes_xml_forbidden_controls() -> None:
